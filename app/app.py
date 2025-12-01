@@ -27,7 +27,7 @@ with tab1:
     adoption outcome counts over time to identify seasonal and long-term trends 
     that may help shelters anticipate capacity needs.
     """)
-    image = Image.open("shelter_img.jpg")
+    image = Image.open("app/shelter_img.jpg")
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         st.image(image, width=700)
@@ -48,4 +48,4 @@ with tab2:
     confusing ‘Return to Owner’ with ‘Adoption,’ may have resulted from class imbalance.
     """)
 
-    components.html(open("confusion_matrix.html", "r").read(), height=600)
+    components.html(open("app/confusion_matrix.html", "r").read(), height=600)
