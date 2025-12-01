@@ -48,4 +48,4 @@ with tab2:
     confusing ‘Return to Owner’ with ‘Adoption,’ may have resulted from class imbalance.
     """)
 
-    components.html(open("app/confusion_matrix.html", "r").read(), height=600)
+    components.html(open("app/confusion_matrix.html", "r").read(), height=500)
