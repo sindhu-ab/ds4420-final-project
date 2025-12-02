@@ -39,7 +39,8 @@ Performance was examined through accuracy, precision, recall, F1 score, and a co
 
 **Time Series Model**
 
---
+The __.R file contains sufficient code to recreate the second method of this project. Re-run the code blocks to display the outputs if needed.
+
 
 
 **Streamlit App**
