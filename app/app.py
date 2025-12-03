@@ -23,8 +23,8 @@ with tab1:
     To address this problem, the project uses two approaches. First, a 
     multi-layer perceptron (MLP) model in Python, which predicts individual 
     animal outcomes based on their characteristics, capturing relationships that 
-    traditional methods often miss. Second, a time series model, which analyzes 
-    adoption outcome counts over time to identify seasonal and long-term trends 
+    traditional methods often miss. Second, time series models, which analyzes 
+    adoption and transfer outcome counts over time to identify seasonal and long-term trends 
     that may help shelters anticipate capacity needs.
     """)
     image = Image.open("app/shelter_img.jpg")
