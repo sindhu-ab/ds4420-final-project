@@ -1,0 +1,368 @@
+---
+title: "DS4220_Final_Project_TimeSeries"
+author: "Ekaum Soni"
+date: "2025-11-18"
+output: html_document
+---
+
+### Time Series Model
+
+```{r}
+library(dplyr)
+```
+
+
+```{r}
+# load data
+data <- read.csv("austin_animal_center_outcomes.csv", stringsAsFactors = FALSE)
+head(data)
+```
+
+```{r}
+# keep MonthYear and Outcome Type
+time_data <- data %>% select(MonthYear, Outcome.Type)
+head(time_data)
+```
+
+```{r}
+# filter out Adoption & Transfer outcomes
+time_data_filtered <- time_data %>%
+  filter(Outcome.Type %in% c("Adoption", "Transfer"))
+
+# aggregate counts by month
+monthly_cts <- time_data_filtered %>%
+  group_by(MonthYear, Outcome.Type) %>%
+  summarise(n = n(), .groups = "drop")
+```
+
+```{r}
+# reshape dataframe
+month_data <- monthly_cts %>%
+  tidyr::pivot_wider(
+    names_from = Outcome.Type,
+    values_from = n,
+    values_fill = 0
+  )
+
+head(month_data)
+```
+
+```{r}
+# reformat & order
+month_data$MonthYear <- as.Date(paste0("01-", month_data$MonthYear), format = "%d-%m-%Y")
+month_data <- month_data[order(month_data$MonthYear), ]
+
+head(month_data)
+```
+
+First, we will explore adoptions over time.
+
+```{r}
+# monthly adoptions over time
+plot(
+  month_data$MonthYear,
+  month_data$Adoption,
+  type = "l",
+  xlab = "Month",
+  ylab = "Number of Adoptions",
+  main = "Adoptions Over Time",
+  lwd = 2
+)
+```
+
+```{r}
+# set 12 month seasonality for decomposition
+adoptions <- ts(month_data$Adoption, start = c(as.numeric(format(min(month_data$MonthYear), "%Y")),
+                                                   as.numeric(format(min(month_data$MonthYear), "%m"))),
+                   frequency = 12)
+
+adoptions_decomp <- decompose(adoptions, type = "additive")
+
+# plot decomposition
+plot(adoptions_decomp)
+```
+
+```{r}
+# make lag features
+max_lag <- 12
+for(i in 1:max_lag){
+  month_data[[paste0("Lag_", i)]] <- c(rep(NA, i), head(month_data$Adoption, -i))
+}
+
+# drop rows with nulls
+month_data_lags <- na.omit(month_data)
+```
+
+```{r}
+# ACF and PACF plots
+acf(adoptions, main = "ACF of Monthly Adoptions")
+pacf(adoptions, main = "PACF of Monthly Adoptions")
+```
+
+ACF has a more gradual decline than the PACF, so we will choose an AR model. The PACF cuts after the first lag so we will do a AR(1) model for monthly adoptions over time.
+
+```{r}
+# isolate necessary columns
+adoptions_ar <- month_data[, c("MonthYear", "Adoption", "Lag_1")]
+
+# make sure format & order is good
+adoptions_ar <- adoptions_ar[order(adoptions_ar$MonthYear), ]
+
+adoptions_ar
+```
+
+```{r}
+# split train (up to May 2024) and test (May 2024 to May 2025) sets
+train_data <- subset(adoptions_ar, MonthYear <= as.Date("2024-05-01"))
+test_data  <- subset(adoptions_ar, MonthYear > as.Date("2024-05-01"))
+
+# only non-null lag
+train_data <- train_data[complete.cases(train_data[, c("Adoption", "Lag_1")]), ]
+
+# define y_train and y_test
+y_train <- train_data$Adoption
+y_test  <- test_data$Adoption
+
+# AR(1) model input
+X_train <- train_data$Lag_1
+```
+
+```{r}
+# scatterplot to check correlation at Lag 1
+plot(X_train, y_train, 
+     xlab = "Lag 1 Adoption Count", 
+     ylab = "Observed Adoption Count", 
+     main = "Lag 1 vs Observed Adoption")
+```
+
+```{r}
+# fit AR(1) Model with intercept (OLS)
+X_matrix <- as.matrix(cbind(Intercept = 1, Lag1 = X_train))
+y_vector <- matrix(y_train, ncol = 1)
+w <- solve(t(X_matrix) %*% X_matrix) %*% (t(X_matrix) %*% y_vector)
+w
+```
+
+```{r}
+# predict on test set
+y_pred <- numeric(length(y_test))
+start <- tail(X_train, 1)
+
+for (i in 1:length(y_test)) {
+  y_pred[i] <- as.numeric(w[1] + w[2] * start)
+  start <- y_pred[i]
+}
+```
+
+```{r}
+# observed vs predicted plot
+plot(y_pred, y_test, xlab = "Predicted Adoption", ylab = "Observed Adoption", main = "AR(1) Model Predictions for Animal Adoptions")
+abline(0, 1, col = "red")
+```
+
+```{r}
+# time series plot of actual vs predicted
+plot(test_data$MonthYear, y_test, type = "l", col = "blue", lwd = 2, 
+     ylim = range(c(y_pred, y_test)), xlab = "Month", ylab = "Adoption Count", 
+     main = "AR(1) Model Predictions for Animal Adoptions")
+lines(test_data$MonthYear, y_pred, col = "red", lwd = 2, lty = 2)
+legend("bottomleft", legend = c("Actual", "AR(1) Predicted"), col = c("blue", "red"), lty = c(1, 2), bty = "n")
+```
+
+```{r}
+# check average monthly adoptions for comparison
+mean(adoptions_ar$Adoption)
+
+# MAE
+MAE <- mean(abs(y_test - y_pred))
+MAE
+
+# RMSE
+RMSE <- sqrt(mean((y_test - y_pred)^2))
+RMSE
+```
+
+```{r}
+# create more long term prediction graph (extra 2 yrs)
+n_future <- nrow(test_data) + 24
+y_pred <- numeric(n_future)
+start <- tail(X_train, 1)
+
+for (i in 1:n_future) {
+  y_pred[i] <- as.numeric(w[1] + w[2] * start)
+  start <- y_pred[i]
+}
+
+# create full MonthYear sequence
+all_months <- seq.Date(from = min(adoptions_ar$MonthYear),
+                       by = "month",
+                       length.out = nrow(adoptions_ar) + 24)
+
+# where prediction starts (May 2024+)
+pred_start_index <- which(all_months == min(test_data$MonthYear))
+
+# plot full time series
+plot(adoptions_ar$MonthYear, adoptions_ar$Adoption, type = "l", col = "blue", lwd = 2,
+  xlim = range(all_months), ylim = range(c(adoptions_ar$Adoption, y_pred)), xlab = "Month",
+  ylab = "Adoption Count", main = "AR(1) Model Predictions and Long-Term Forecast for Adoptions")
+lines(all_months[pred_start_index : (pred_start_index + n_future - 1)], y_pred, col = "red", lwd = 2, lty = 2)
+legend("bottomleft", legend = c("Actual", "AR(1) Predicted"), col = c("blue", "red"), lty = c(1, 2), bty = "n")
+```
+
+
+Next, we will explore transfers over time.
+
+```{r}
+# monthly transfers over time
+plot(
+  month_data$MonthYear,
+  month_data$Transfer,
+  type = "l",
+  xlab = "Month",
+  ylab = "Number of Transfers",
+  main = "Transfers Over Time",
+  lwd = 2
+)
+```
+
+```{r}
+# set 12 month seasonality for decomposition
+transfers <- ts(month_data$Transfer, start = c(as.numeric(format(min(month_data$MonthYear), "%Y")),
+                                                   as.numeric(format(min(month_data$MonthYear), "%m"))),
+                   frequency = 12)
+
+transfers_decomp <- decompose(transfers, type = "additive")
+
+# plot decomposition
+plot(transfers_decomp)
+```
+
+```{r}
+# make lag features for transfers
+max_lag <- 12
+for(i in 1:max_lag){
+  month_data[[paste0("LagT_", i)]] <- c(rep(NA, i), head(month_data$Transfer, -i))
+}
+
+# drop rows with nulls
+month_data_lags <- na.omit(month_data)
+```
+
+```{r}
+# ACF and PACF plots
+acf(transfers, main = "ACF of Monthly Transfers")
+pacf(transfers, main = "PACF of Monthly Transfers")
+```
+
+Similar to the adoptions plots, the transfers ACF has a more gradual decline than the PACF, so we will choose an AR model. The PACF cuts after the first lag so we will once again do a AR(1) model for monthly transfers over time.
+
+```{r}
+# isolate necessary columns
+transfers_ar <- month_data[, c("MonthYear", "Transfer", "LagT_1")]
+
+# make sure format & order is good
+transfers_ar <- transfers_ar[order(transfers_ar$MonthYear), ]
+
+transfers_ar
+```
+
+```{r}
+# split train (up to May 2024) and test (May 2024 to May 2025) sets
+train_data <- subset(transfers_ar, MonthYear <= as.Date("2024-05-01"))
+test_data  <- subset(transfers_ar, MonthYear > as.Date("2024-05-01"))
+
+# only non-null lag
+train_data <- train_data[complete.cases(train_data[, c("Transfer", "LagT_1")]), ]
+
+# define y_train and y_test
+y_train <- train_data$Transfer
+y_test  <- test_data$Transfer
+
+# AR(1) model input
+X_train <- train_data$LagT_1
+```
+
+```{r}
+# scatterplot to check correlation at Lag 1 for transfers
+plot(X_train, y_train, 
+     xlab = "Lag 1 Transfer Count", 
+     ylab = "Observed Transfer Count", 
+     main = "Lag 1 vs Observed Transfer")
+```
+
+
+```{r}
+# fit AR(1) Model with intercept (OLS)
+X_matrix <- as.matrix(cbind(Intercept = 1, Lag1 = X_train))
+y_vector <- matrix(y_train, ncol = 1)
+w <- solve(t(X_matrix) %*% X_matrix) %*% (t(X_matrix) %*% y_vector)
+w
+```
+
+```{r}
+# predict on test set
+y_pred <- numeric(length(y_test))
+start <- tail(X_train, 1)
+
+for (i in 1:length(y_test)) {
+  y_pred[i] <- as.numeric(w[1] + w[2] * start)
+  start <- y_pred[i]
+}
+```
+
+```{r}
+# observed vs predicted plot
+plot(y_pred, y_test, xlab = "Predicted Transfer", ylab = "Observed Transfer", main = "AR(1) Model Predictions for Animal Transfers")
+abline(0, 1, col = "red")
+```
+
+```{r}
+# time series plot of actual vs predicted
+plot(test_data$MonthYear, y_test, type = "l", col = "blue", lwd = 2, 
+     ylim = range(c(y_pred, y_test)), xlab = "Month", ylab = "Transfer Count", 
+     main = "AR(1) Model Predictions for Animal Transfers")
+lines(test_data$MonthYear, y_pred, col = "red", lwd = 2, lty = 2)
+legend("bottomleft", legend = c("Actual", "AR(1) Predicted"), col = c("blue", "red"), lty = c(1, 2), bty = "n")
+```
+
+```{r}
+# check average monthly transfers for comparison
+mean(transfers_ar$Transfer)
+
+# MAE
+MAE <- mean(abs(y_test - y_pred))
+MAE
+
+# RMSE
+RMSE <- sqrt(mean((y_test - y_pred)^2))
+RMSE
+```
+
+```{r}
+# create more long term prediction graph (extra 2 yrs)
+n_future <- nrow(test_data) + 24
+y_pred <- numeric(n_future)
+start <- tail(X_train, 1)
+
+for (i in 1:n_future) {
+  y_pred[i] <- as.numeric(w[1] + w[2] * start)
+  start <- y_pred[i]
+}
+
+# create full MonthYear sequence
+all_months <- seq.Date(from = min(transfers_ar$MonthYear),
+                       by = "month",
+                       length.out = nrow(transfers_ar) + 24)
+
+# where prediction starts (May 2024+)
+pred_start_index <- which(all_months == min(test_data$MonthYear))
+
+# plot full time series
+plot(transfers_ar$MonthYear, transfers_ar$Transfer, type = "l", col = "blue", lwd = 2,
+  xlim = range(all_months), ylim = range(c(transfers_ar$Transfer, y_pred)), xlab = "Month",
+  ylab = "Transfer Count", main = "AR(1) Model Predictions and Long-Term Forecast for Transfers")
+lines(all_months[pred_start_index : (pred_start_index + n_future - 1)], y_pred, col = "red", lwd = 2, lty = 2)
+legend("bottomleft", legend = c("Actual", "AR(1) Predicted"), col = c("blue", "red"), lty = c(1, 2), bty = "n")
+```
+
+
