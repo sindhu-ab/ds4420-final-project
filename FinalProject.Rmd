@@ -1,0 +1,254 @@
+---
+title: "Final Project"
+author: "ekaumsoni"
+date: "2025-11-18"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(tsibble)
+```
+
+```{r}
+
+pets_raw <- readr::read_csv("austin_animal_center_outcomes.csv")
+pets <- pets_raw %>%
+clean_names()
+
+```
+
+```{r}
+pets <- pets %>%
+  mutate(
+    outcome_datetime = ymd_hms(date_time, quiet = TRUE),
+    outcome_date     = as_date(outcome_datetime),
+    outcome_week  = floor_date(outcome_date, unit = "week", week_start = 1),
+    outcome_month = floor_date(outcome_date, unit = "month")
+  ) %>%
+  
+  filter(!is.na(outcome_datetime))
+```
+
+```{r}
+adoptions <- pets %>%
+  filter(outcome_type == "Adoption")
+```
+
+```{r}
+adoptions_weekly <- adoptions %>%
+  count(outcome_week, name = "n_adoptions") %>%
+  complete(
+    outcome_week = seq.Date(min(outcome_week), max(outcome_week), by = "week"),
+    fill = list(n_adoptions = 0)
+  ) %>%
+  arrange(outcome_week)
+```
+
+```{r}
+adoptions_monthly <- adoptions %>%
+  count(outcome_month, name = "n_adoptions") %>%
+  complete(
+    outcome_month = seq.Date(min(outcome_month), max(outcome_month), by = "month"),
+    fill = list(n_adoptions = 0)
+  ) %>%
+  arrange(outcome_month)
+```
+
+```{r}
+
+weekly_ts <- adoptions_weekly %>%
+  as_tsibble(index = outcome_week)
+
+monthly_ts <- adoptions_monthly %>%
+  as_tsibble(index = outcome_month)
+```
+
+```{r}
+# Weekly
+weekly_ts_base <- ts(
+  adoptions_weekly$n_adoptions,
+  frequency = 52
+)
+
+# Monthly
+monthly_ts_base <- ts(
+  adoptions_monthly$n_adoptions,
+  frequency = 12
+)
+```
+
+
+```{r}
+pets <- pets %>%
+  separate(age_upon_outcome, into = c("age_value", "age_unit"), sep = " ", fill = "right") %>%
+  mutate(
+    age_value = as.numeric(age_value),
+    age_years = case_when(
+      str_detect(age_unit, "year")  ~ age_value,
+      str_detect(age_unit, "month") ~ age_value / 12,
+      str_detect(age_unit, "week")  ~ age_value / 52,
+      str_detect(age_unit, "day")   ~ age_value / 365,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+```{r}
+plot(weekly_ts)
+plot(monthly_ts)
+
+```
+
+```{r}
+monthly_model_df <- adoptions_monthly %>%
+  arrange(outcome_month) %>%
+  mutate(
+    t = row_number(),
+    month_num = month(outcome_month)
+  )
+
+T_obs <- nrow(monthly_model_df)
+
+intercept <- rep(1, T_obs)                 
+trend     <- monthly_model_df$t            
+month_num <- monthly_model_df$month_num    
+
+month_dummies <- sapply(2:12, function(m) as.numeric(month_num == m))
+colnames(month_dummies) <- paste0("month_", month.abb[2:12])
+
+
+X <- cbind(intercept, trend, month_dummies)
+X <- as.matrix(X)             
+
+y <- as.numeric(monthly_model_df$n_adoptions)
+#dim(X)     
+#length(y)  
+
+XtX     <- t(X) %*% X
+XtX_inv <- solve(XtX)
+Xty     <- t(X) %*% y
+
+beta_hat <- XtX_inv %*% Xty
+beta_hat
+
+y_hat <- as.vector(X %*% beta_hat)
+resid <- y - y_hat
+
+SST <- sum((y - mean(y))^2)
+SSE <- sum(resid^2)
+R2  <- 1 - SSE / SST
+
+
+T_obs <- length(y)
+p     <- ncol(X)           
+
+MSE   <- mean(resid^2)
+RMSE  <- sqrt(MSE)
+MAE   <- mean(abs(resid))
+MAPE  <- mean(abs(resid / y)) * 100   
+adj_R2 <- 1 - (SSE / (T_obs - p)) / (SST / (T_obs - 1))
+
+cat("R^2:      ", R2, "\n")
+cat("Adj R^2:  ", adj_R2, "\n")
+cat("RMSE:     ", RMSE, "\n")
+cat("MAE:      ", MAE, "\n")
+cat("MAPE (%): ", MAPE, "\n")
+
+
+```
+
+
+```{r}
+
+monthly_model_df <- monthly_model_df %>%
+mutate(
+fitted_adoptions = y_hat,
+residuals        = resid
+)
+
+ggplot(monthly_model_df, aes(x = outcome_month)) +
+geom_line(aes(y = n_adoptions), linewidth = 0.7, color = "black") +
+geom_line(aes(y = fitted_adoptions), linewidth = 0.7, linetype = "dashed") +
+labs(
+title = "Monthly Adoptions: Actual vs Manual Trend (Seasonality Fit)",
+x = "Month",
+y = "# of Adoptions"
+) +
+theme_minimal()
+
+```
+
+```{r}
+
+last_date <- max(monthly_model_df$outcome_month)
+last_t    <- max(monthly_model_df$t)
+
+
+
+future_months <- seq(
+from = last_date %m+% months(1),
+by   = "1 month",
+length.out = 12
+)
+
+future_df <- tibble(
+outcome_month = future_months
+) %>%
+mutate(
+t         = last_t + row_number(),
+month_num = month(outcome_month)
+)
+
+T_future <- nrow(future_df)
+
+
+int_future    <- rep(1, T_future)
+trend_future  <- future_df$t
+month_num_fut <- future_df$month_num
+
+month_dummies_future <- sapply(2:12, function(m) as.numeric(month_num_fut == m))
+colnames(month_dummies_future) <- paste0("month_", month.abb[2:12])
+
+X_future <- cbind(int_future, trend_future, month_dummies_future)
+
+
+forecast_vals <- as.vector(X_future %*% beta_hat)
+
+#CANT BE NEGATIVE**
+forecast_vals <- pmax(forecast_vals, 0)
+
+future_df <- future_df %>%
+mutate(
+forecast_adoptions = forecast_vals
+)
+
+future_df
+
+```
+
+```{r}
+ggplot() +
+geom_line(
+data = monthly_model_df,
+aes(x = outcome_month, y = n_adoptions),
+linewidth = 0.7,
+color = "black"
+) +
+geom_line(
+data = future_df,
+aes(x = outcome_month, y = forecast_adoptions),
+linewidth = 0.7,
+linetype = "dashed",
+color = "red"
+) +
+labs(
+title = "Monthly Adoptions: Historical and 12-Month Forecast",
+x = "Month",
+y = "Number of Adoptions"
+) +
+theme_minimal()
+
+```
